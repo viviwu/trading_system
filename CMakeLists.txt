@@ -7,9 +7,16 @@ set(CMAKE_CXX_FLAGS "-O2 -pthread")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/bin")
 message(STATUS "CMAKE_RUNTIME_OUTPUT_DIRECTORY: ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
 
-include_directories(src)
+include_directories(src
+  src/common
+  src/protocol
+  src/net
+  src/engine
+)
 
 file(GLOB_RECURSE SRC_FILES
+  src/common/*.cpp
+  src/protocol/*.cpp
   src/net/*.cpp
   src/engine/*.cpp
   src/main_server.cpp
