@@ -2,12 +2,11 @@
   ******************************************************************************
   * @file           : TcpConnection.cpp
   * @author         : vivi wu 
-  * @brief          : None
-  * @version        : 0.1.0
+  * @brief          : TCP 连接实现
+  * @version        : 0.2.0
   * @date           : 30/04/26
   ******************************************************************************
   */
-
 
 #include "TcpConnection.h"
 #include "Channel.h"
@@ -18,6 +17,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <cstring>
+#include <string>
 
 TcpConnection::TcpConnection(int fd, EventLoop* loop, MatchingEngine* engine)
     : fd_(fd), loop_(loop), engine_(engine) {
@@ -55,7 +55,13 @@ void TcpConnection::handleRead() {
         memcpy(&req, input_.data(), sizeof(req));
         input_.retrieve(sizeof(req));
 
-        engine_->submit(req, [self = shared_from_this()](OrderResp resp) {
+        // symbol 字段可能不以 '\0' 结尾，需要安全转换
+        std::string symbol(req.symbol, strnlen(req.symbol, sizeof(req.symbol)));
+        if (symbol.empty()) {
+            symbol = "UNKNOWN";  // 兜底
+        }
+
+        engine_->submit(symbol, req, [self = shared_from_this()](OrderResp resp) {
             self->send((char*)&resp, sizeof(resp));
         });
     }

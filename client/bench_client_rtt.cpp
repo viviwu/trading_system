@@ -1,14 +1,12 @@
 /**
   ******************************************************************************
-  * @file           : BenchClient.h
+  * @file           : bench_client_rtt.cpp
   * @author         : vivi wu 
-  * @brief          : None
-  * @version        : 0.1.0
+  * @brief          : RTT 延迟压测客户端
+  * @version        : 0.2.0
   * @date           : 30/04/26
   ******************************************************************************
   */
-
-// g++ -std=c++17 bench_client_rtt.cpp -o bench_client
 
 #include <unistd.h>
 #include <arpa/inet.h>
@@ -21,6 +19,9 @@
 #include <cstring>
 #include <chrono>
 #include <algorithm>
+#include <random>
+
+#include "../src/protocol/Protocol.h"
 
 using Clock = std::chrono::steady_clock;
 
@@ -42,6 +43,8 @@ struct Conn {
     int fd;
     bool connected{false};
     uint64_t send_ts{0};
+    uint64_t nextOrderId{0};
+    bool pending{false};  // 等待响应中
 };
 
 // ================= percentile =================
@@ -59,13 +62,17 @@ uint32_t percentile(std::vector<uint32_t>& v, double p) {
 
 int main(int argc, char* argv[]) {
     if (argc < 4) {
-        std::cout << "Usage: ./bench_client ip port connections\n";
+        std::cout << "Usage: ./bench_client_rtt ip port connections [symbol]\n";
         return 0;
     }
 
     const char* ip = argv[1];
     int port = atoi(argv[2]);
     int connCount = atoi(argv[3]);
+    const char* symbolArg = (argc > 4) ? argv[4] : "BTC/USD";
+
+    char symbol[8] = {};
+    strncpy(symbol, symbolArg, sizeof(symbol) - 1);
 
     int epfd = epoll_create1(0);
     std::vector<Conn> conns(connCount);
@@ -75,11 +82,15 @@ int main(int argc, char* argv[]) {
     addr.sin_port = htons(port);
     inet_pton(AF_INET, ip, &addr.sin_addr);
 
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> priceDist(900, 1100);
+    std::uniform_int_distribution<> qtyDist(1, 50);
+
     // ===== 建立连接 =====
     for (int i = 0; i < connCount; ++i) {
         int fd = socket(AF_INET, SOCK_STREAM, 0);
         setNonBlocking(fd);
-
         connect(fd, (sockaddr*)&addr, sizeof(addr));
 
         epoll_event ev{};
@@ -89,6 +100,7 @@ int main(int argc, char* argv[]) {
         epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev);
 
         conns[i].fd = fd;
+        conns[i].nextOrderId = static_cast<uint64_t>(i) * 1000000ULL;
     }
 
     std::vector<epoll_event> events(1024);
@@ -111,12 +123,21 @@ int main(int argc, char* argv[]) {
             }
 
             // ===== 写 =====
-            if (events[i].events & EPOLLOUT) {
-                const char* msg = "ping";
+            if ((events[i].events & EPOLLOUT) && !c.pending) {
+                OrderReq req{};
+                req.len = sizeof(req);
+                req.orderId = ++c.nextOrderId;
+                req.account = 1001 + (idx % 10);
+                req.price = priceDist(gen);
+                req.qty = qtyDist(gen);
+                req.side = (req.orderId % 2 == 0) ? 1 : 2;
+                req.ts = now_us();
+                memcpy(req.symbol, symbol, sizeof(req.symbol));
 
-                int ret = write(c.fd, msg, 4);
+                int ret = write(c.fd, &req, sizeof(req));
                 if (ret > 0) {
                     c.send_ts = now_us();
+                    c.pending = true;
                 }
             }
 
@@ -128,10 +149,13 @@ int main(int argc, char* argv[]) {
                     int ret = read(c.fd, buf, sizeof(buf));
 
                     if (ret > 0) {
-                        uint64_t rtt = now_us() - c.send_ts;
-                        latencies.push_back((uint32_t)rtt);
-                        totalResp++;
-
+                        size_t count = ret / sizeof(OrderResp);
+                        for (size_t k = 0; k < count; ++k) {
+                            uint64_t rtt = now_us() - c.send_ts;
+                            latencies.push_back(static_cast<uint32_t>(rtt));
+                            totalResp++;
+                            c.pending = false;
+                        }
                     } else if (ret == 0) {
                         close(c.fd);
                         break;
@@ -148,8 +172,7 @@ int main(int argc, char* argv[]) {
         auto sec = std::chrono::duration_cast<std::chrono::seconds>(now - start).count();
 
         if (sec >= 1 && !latencies.empty()) {
-
-            auto tmp = latencies; // 拷贝一份做统计
+            auto tmp = latencies;
 
             uint32_t p50  = percentile(tmp, 0.50);
             uint32_t p90  = percentile(tmp, 0.90);

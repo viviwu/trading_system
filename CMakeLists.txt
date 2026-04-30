@@ -20,3 +20,11 @@ add_executable(server ${SRC_FILES})
 add_executable(client
   client/main_client.cpp
 )
+
+add_executable(bench_client
+  client/bench_client.cpp
+)
+
+add_executable(bench_client_rtt
+  client/bench_client_rtt.cpp
+)
